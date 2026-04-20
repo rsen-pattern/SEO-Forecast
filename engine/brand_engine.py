@@ -1,20 +1,13 @@
 """Brand keyword classification engine.
 
 Classifies keywords as branded vs. non-branded using a list of brand terms.
-Word-boundary matching prevents false matches (e.g. 'cable' won't match 'cablecar').
+Uses broad-match (case-insensitive substring) so entering "helen" flags all
+keywords containing that word regardless of what follows.
 """
 
 from __future__ import annotations
 
-import re
-
 import pandas as pd
-
-
-def _word_boundary_pattern(term: str) -> re.Pattern:
-    """Build a case-insensitive word-boundary regex for a brand term."""
-    escaped = re.escape(term.lower())
-    return re.compile(r"(?<![a-z0-9])" + escaped + r"(?![a-z0-9])", re.IGNORECASE)
 
 
 def classify_keywords_as_branded(
@@ -23,8 +16,8 @@ def classify_keywords_as_branded(
 ) -> pd.DataFrame:
     """Add an 'is_branded' boolean column to kw_df.
 
-    Matching is case-insensitive with word boundaries so partial matches
-    inside other words don't trigger false positives.
+    Matching is broad-match: case-insensitive substring. Each brand term is
+    checked independently so entering "helen" flags "helen kaminski bags".
 
     Args:
         kw_df: DataFrame with a 'keyword' column.
@@ -38,11 +31,11 @@ def classify_keywords_as_branded(
         df["is_branded"] = False
         return df
 
-    patterns = [_word_boundary_pattern(t) for t in brand_terms if t.strip()]
+    normalised = [t.strip().lower() for t in brand_terms if t.strip()]
 
     def _is_branded(keyword: str) -> bool:
         kw = keyword.lower()
-        return any(p.search(kw) for p in patterns)
+        return any(term in kw for term in normalised)
 
     df["is_branded"] = df["keyword"].apply(_is_branded)
     return df

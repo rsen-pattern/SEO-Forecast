@@ -299,6 +299,25 @@ with tab_semrush:
                     f"({n_branded / n_total * 100:.1f}%)."
                 )
 
+        # View matched branded keywords
+        _saved_kw = st.session_state.get(KW_DF)
+        if _saved_kw is not None and "is_branded" in _saved_kw.columns:
+            _branded_kws = _saved_kw[_saved_kw["is_branded"]][["keyword", "volume", "position"]].copy()
+            _branded_kws = _branded_kws.sort_values("volume", ascending=False).reset_index(drop=True)
+            if not _branded_kws.empty:
+                with st.expander(f"View {len(_branded_kws)} branded keywords (broad match)", expanded=False):
+                    st.caption(
+                        "These keywords will be **excluded from forecasts** when "
+                        "'Exclude branded keywords' is enabled. Edit the terms above and "
+                        "re-save to adjust the match."
+                    )
+                    st.dataframe(
+                        _branded_kws.rename(columns={"keyword": "Keyword", "volume": "Volume", "position": "Position"}),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(400, 36 + 35 * len(_branded_kws)),
+                    )
+
     elif uploaded_semrush is not None:
         st.error("Could not parse the uploaded SEMrush file. Please check the format.")
 

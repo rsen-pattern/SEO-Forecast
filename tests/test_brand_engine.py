@@ -33,20 +33,14 @@ class TestClassifyKeywordsAsBranded:
         assert result.loc[result["keyword"] == "nike air max", "is_branded"].iloc[0]
         assert not result.loc[result["keyword"] == "best running shoes", "is_branded"].iloc[0]
 
-    def test_word_boundary_prevents_partial_match(self, sample_df):
-        # "cable" should match "cable melbourne shop" but NOT inside "cablecar"
-        df = pd.DataFrame({"keyword": ["cable car", "cable-car", "cablecar", "cable melbourne"]})
+    def test_broad_match_substring(self, sample_df):
+        # Broad match: "cable" matches any keyword containing "cable" as a substring
+        df = pd.DataFrame({"keyword": ["cable car", "cablecar", "cable melbourne", "excable shoes"]})
         result = classify_keywords_as_branded(df, ["cable"])
         assert result.loc[result["keyword"] == "cable car", "is_branded"].iloc[0]
+        assert result.loc[result["keyword"] == "cablecar", "is_branded"].iloc[0]
         assert result.loc[result["keyword"] == "cable melbourne", "is_branded"].iloc[0]
-        # "cablecar" has no word boundary around "cable" — should still match because
-        # the word boundary allows start-of-string; only non-word chars matter
-        # The important case: "cablecar" (no space) — "cable" appears at word start → matches
-        # but if we had "excable" the prefix char 'e' is [a-z0-9] so it would NOT match
-        df2 = pd.DataFrame({"keyword": ["excable shoes", "cable shoes"]})
-        result2 = classify_keywords_as_branded(df2, ["cable"])
-        assert not result2.loc[result2["keyword"] == "excable shoes", "is_branded"].iloc[0]
-        assert result2.loc[result2["keyword"] == "cable shoes", "is_branded"].iloc[0]
+        assert result.loc[result["keyword"] == "excable shoes", "is_branded"].iloc[0]
 
     def test_case_insensitive(self):
         df = pd.DataFrame({"keyword": ["Nike Shoes", "NIKE Air", "adidas"]})
@@ -64,11 +58,13 @@ class TestClassifyKeywordsAsBranded:
         result = classify_keywords_as_branded(sample_df, [])
         assert (~result["is_branded"]).all()
 
-    def test_classify_word_boundary_no_substring_match(self):
+    def test_classify_broad_match_substring(self):
+        # Broad match: all three contain "cable" as a substring — all should be branded
         df = pd.DataFrame({"keyword": ["excable shoes", "cable shoes", "cablecar"]})
         result = classify_keywords_as_branded(df, ["cable"])
-        assert not result.loc[result["keyword"] == "excable shoes", "is_branded"].iloc[0]
+        assert result.loc[result["keyword"] == "excable shoes", "is_branded"].iloc[0]
         assert result.loc[result["keyword"] == "cable shoes", "is_branded"].iloc[0]
+        assert result.loc[result["keyword"] == "cablecar", "is_branded"].iloc[0]
 
     def test_classify_case_insensitive(self):
         df = pd.DataFrame({"keyword": ["Nike Shoes", "NIKE Air", "adidas"]})
