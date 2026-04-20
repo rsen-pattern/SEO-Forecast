@@ -217,6 +217,8 @@ def run_positional_forecast_mc(
     """
     df = df.copy()
     df = df[df["position"].between(1, 100)].reset_index(drop=True)
+    # Coerce kd to numeric — SEMrush exports occasionally have missing/string KD values
+    df["kd"] = pd.to_numeric(df["kd"], errors="coerce").fillna(50).clip(0, 100)
 
     if df.empty:
         empty_monthly = pd.DataFrame({
