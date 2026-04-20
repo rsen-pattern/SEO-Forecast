@@ -178,18 +178,40 @@ Then read values with `get_assumption(store, "blended_cr_pct")` instead of hardc
 - `render_assumptions_banner(store)` — compact info bar with provenance counts; call after the page header
 - `render_assumptions_panel(store)` — full table with override widgets; shown at bottom of Data Upload page
 
-## Roadmap ingestion (v4 → v4.9)
+## Roadmap ingestion (v4.9)
 
-Roadmap detection goes through `engine.roadmap_ai_engine`, not the legacy loader.
+All roadmap loading goes through `engine/roadmap_ai_engine.py`. Entry point: `load_roadmap_v2(client, raw_bytes, filename, ...)`.
 
-`engine/roadmap_ai_engine.py::extract_roadmap_with_ai()` extracts a rich per-focus-area bundle from an uploaded xlsx/csv file using a Bi Frost LLM call. The bundle is flattened into ~17 assumption keys by `_detect_from_roadmap_bundle()` in `engine/assumptions.py`.
+### Format detection
 
-Per-focus assumption keys are the source of truth; the three legacy scalars (`effort_level`, `content_cadence`, `maintenance_coverage`) are **computed rollups** — do not set them directly from new code. They are derived by `recompute_rollups(store)` which is called at the end of `_detect_from_roadmap()`.
+`detect_roadmap_format(raw_bytes, file_extension)` returns:
+- `"pattern_native"` — Pattern multi-sheet SOW (≥4 matching sheet names). Parsed deterministically, no AI cost.
+- `"task_table"` — CSV/xlsx with Task + Focus columns → full AI extraction
+- `"param_table"` — CSV/xlsx with cadence/effort_level → full AI extraction
+- `"unknown"` → full AI extraction
 
-Caching: Bi Frost roadmap extraction results are cached in `st.session_state["roadmap_ai_cache"]` as `dict[str, dict]` keyed by `hash(file_bytes + nl_correction + model)`. This prevents re-runs on Streamlit rerenders — only genuine user edits (new bytes or new correction text) trigger new AI calls. Do **not** add debouncing — the cache already handles it.
+### Pattern native path (v2 bundle)
 
-The Bi Frost roadmap extraction is re-run on every user edit by design (product decision). The cache makes this safe.
+`parse_pattern_native(raw_bytes)` → `(bundle_v2, raw_task_descriptions)`. Does NOT call AI. Returns schema_version "2.0" bundle with `client_metadata`, `per_focus`, `timeline`, and `content_plan` (URL-level plan).
 
-`utils/roadmap_loader.py` is the **legacy scalar loader**, retained for CI tests and no-AI fallback only. Its `load_roadmap()` function is deprecated — new code must not call it except in the fallback path in `pages/1_Data_Upload.py`.
+After parsing, `enrich_bundle_with_ai()` is called (best-effort) to add recommendations + gaps.
 
-The Data Upload page (Roadmap tab) calls `run_detection(store, roadmap_data=bundle)` after extraction to wire values into the assumptions store.
+### content_plan → New Content engine
+
+Content plan stored in `st.session_state["roadmap_content_plan"]`, passed to `run_new_content_forecast(..., roadmap_content_plan=...)`. Matched keywords get `publish_month` from plan; `page_type="optimise"` sets `amplitude_scale=0.3`.
+
+### Industry seasonality priors
+
+`engine/seasonality_engine.INDUSTRY_SEASONALITY_PRIORS` — 8 verticals. `apply_industry_bias(seasonality, industry, bias_weight=0.3)` blends the prior in. Applied on "Apply to assumptions" when industry is set in the roadmap bundle.
+
+### Assumptions store — per-focus keys are source of truth
+
+`effort_level`, `content_cadence`, `maintenance_coverage` are computed rollups from `recompute_rollups(store)`. Do not set them directly. New v2-only keys: `client_name`, `industry`, `retainer_aud_monthly`, `strategy_restart_month`.
+
+### Caching
+
+`st.session_state["roadmap_ai_cache"]` keyed by `SHA256(bytes + correction + model)[:16]`. Pattern-native path needs no caching (deterministic + fast).
+
+### Legacy fallback
+
+`utils/roadmap_loader.py::load_roadmap()` is retained for CI tests only. New code must not call it except in the `pages/1_Data_Upload.py` no-AI fallback path.

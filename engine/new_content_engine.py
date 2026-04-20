@@ -128,6 +128,63 @@ def efficiency_score(volume: int, kd: int) -> float:
     return volume / (kd + 1)
 
 
+def _match_roadmap_content_plan(
+    df: pd.DataFrame,
+    content_plan: list[dict],
+) -> dict[int, dict]:
+    """Build a map from keyword df index → roadmap content plan entry.
+
+    Matching heuristic (in order of precedence):
+    1. Exact keyword match (case-insensitive)
+    2. URL slug contains a significant word from the keyword (≥5 chars)
+    3. No match — keyword follows cadence-based publish_month assignment
+
+    Returns:
+        {df_index: content_plan_entry}
+    """
+    if not content_plan:
+        return {}
+
+    idx_map: dict[int, dict] = {}
+    used_plan_indices: set[int] = set()
+
+    for i, row in df.iterrows():
+        kw = str(row.get("keyword", "")).lower().strip()
+        matched_j: int | None = None
+        matched_entry: dict | None = None
+        best_slug_score = 0
+
+        for j, entry in enumerate(content_plan):
+            if j in used_plan_indices:
+                continue
+            entry_kw = str(entry.get("keyword", "")).lower().strip()
+            entry_url = str(entry.get("url", "")).lower().strip()
+
+            # Exact keyword match — highest priority, stop searching
+            if entry_kw and entry_kw == kw:
+                matched_j = j
+                matched_entry = entry
+                break
+
+            # URL slug contains a significant word from the keyword
+            words = [w for w in kw.split() if len(w) >= 5]
+            if words:
+                slug_score = sum(1 for w in words if w in entry_url)
+                if slug_score > best_slug_score:
+                    best_slug_score = slug_score
+                    matched_j = j
+                    matched_entry = entry
+
+        if matched_entry is not None and matched_j is not None and matched_j not in used_plan_indices:
+            # Require at least a slug match score of 1 for non-exact matches
+            entry_kw_check = str(matched_entry.get("keyword", "")).lower().strip()
+            if entry_kw_check == kw or best_slug_score > 0:
+                idx_map[i] = matched_entry
+                used_plan_indices.add(matched_j)
+
+    return idx_map
+
+
 def run_new_content_forecast(
     df: pd.DataFrame,
     da: int,
@@ -141,6 +198,7 @@ def run_new_content_forecast(
     seasonality: dict | None = None,
     forecast_start_month: int | None = None,
     aio_intent_penalties: dict | None = None,
+    roadmap_content_plan: list[dict] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the full new-content keyword forecast pipeline.
 
@@ -162,6 +220,10 @@ def run_new_content_forecast(
         seasonality: Dict {month_num: {traffic_mod: float}} applied to monthly totals.
         forecast_start_month: Calendar month (1-12) of horizon month 1.
         aio_intent_penalties: Dict {intent: penalty_pct} — supersedes ai_overview_ctr_penalty.
+        roadmap_content_plan: Optional list of dicts from v2 bundle content_plan.
+            Each entry: {url, keyword, page_type, publish_month, notes}.
+            When provided, matched keywords use the plan's publish_month and
+            "optimise" page type gets 0.3× amplitude scaling on the S-curve.
 
     Returns:
         keyword_df: Per-keyword results with all computed fields.
@@ -186,8 +248,19 @@ def run_new_content_forecast(
     # Step 2: Classify difficulty
     df["tier"] = df["kd"].apply(classify_difficulty)
 
-    # Step 3: Assign publish months based on cadence
+    # Step 3: Assign publish months — roadmap plan overrides cadence-based assignment
     df["publish_month"] = df.index // cadence + 1
+    df["amplitude_scale"] = 1.0  # default: full S-curve amplitude
+
+    if roadmap_content_plan:
+        plan_map = _match_roadmap_content_plan(df, roadmap_content_plan)
+        for idx, entry in plan_map.items():
+            pm = entry.get("publish_month")
+            if pm is not None:
+                df.at[idx, "publish_month"] = max(1, int(pm))
+            # Existing-page optimisations get reduced amplitude (less headroom to grow)
+            if str(entry.get("page_type", "new")).lower() == "optimise":
+                df.at[idx, "amplitude_scale"] = 0.3
 
     # Step 4: Roll ranking probability dice (seeded per keyword)
     probabilities = []
@@ -261,13 +334,14 @@ def run_new_content_forecast(
         for _, row in df.iterrows()
     ]
 
-    # Step 7: S-curve phased maturation projection
+    # Step 7: S-curve phased maturation projection (amplitude_scale applied per-keyword)
     monthly_totals = np.zeros(months)
     for _, row in df.iterrows():
         if not row["will_rank"] or row["estimated_monthly_traffic"] == 0:
             continue
         schedule = maturation_schedule(row["tier"], months, int(row["publish_month"]))
-        monthly_totals += row["estimated_monthly_traffic"] * schedule
+        amplitude = float(row.get("amplitude_scale", 1.0))
+        monthly_totals += row["estimated_monthly_traffic"] * schedule * amplitude
 
     # Apply seasonality to monthly totals
     if seasonality and forecast_start_month is not None:

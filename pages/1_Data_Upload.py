@@ -17,7 +17,8 @@ from engine.seasonality_engine import (
 from engine.brand_engine import classify_keywords_as_branded
 from engine.ai_engine import get_bifrost_client
 from engine.roadmap_ai_engine import (
-    extract_roadmap_with_ai, estimate_extraction_tokens, ROADMAP_BUNDLE_SCHEMA,
+    extract_roadmap_with_ai, extract_roadmap_full_ai, estimate_extraction_tokens,
+    ROADMAP_BUNDLE_SCHEMA, detect_roadmap_format, load_roadmap_v2,
 )
 
 st.header("Data Upload")
@@ -290,10 +291,13 @@ with tab_semrush:
 with tab_roadmap:
     st.markdown(
         "Upload your SEO roadmap to extract **per-focus-area effort levels**, "
-        "**monthly hours**, and **content cadence** using AI — giving the forecast engines "
+        "**monthly hours**, and **content cadence** — giving the forecast engines "
         "richer signal than a single effort-level scalar."
     )
-    st.caption("Accepts xlsx or CSV files. AI extraction requires Bi Frost API access; falls back to legacy scalar detection if unavailable.")
+    st.caption(
+        "Pattern native multi-sheet SOW workbooks are parsed deterministically (no AI cost). "
+        "Generic files use AI extraction via Bi Frost."
+    )
 
     _ai_client = get_bifrost_client(st.session_state.get("bifrost_api_key"))
     _ai_model = st.session_state.get("ai_model", "openai/gpt-4o-mini")
@@ -309,114 +313,229 @@ with tab_roadmap:
     if uploaded_roadmap is not None:
         _raw_bytes = uploaded_roadmap.read()
         _ext = uploaded_roadmap.name.rsplit(".", 1)[-1] if "." in uploaded_roadmap.name else "csv"
+        _filename = uploaded_roadmap.name
         st.session_state["roadmap_raw_bytes"] = _raw_bytes
         st.session_state["roadmap_file_ext"] = _ext
+        st.session_state["roadmap_filename"] = _filename
 
     _raw_bytes = st.session_state.get("roadmap_raw_bytes")
 
     if _raw_bytes is not None:
-        if _ai_available:
-            # ── AI extraction flow ─────────────────────────────────────────
-            _ext = st.session_state.get("roadmap_file_ext", "csv")
+        _ext = st.session_state.get("roadmap_file_ext", "csv")
+        _filename = st.session_state.get("roadmap_filename", f"roadmap.{_ext}")
 
-            col_ext, col_btn = st.columns([3, 1])
-            with col_btn:
-                _do_extract = st.button("Extract with AI", key="roadmap_ai_extract", type="primary")
+        # ── Format detection banner ─────────────────────────────────────────
+        _fmt = detect_roadmap_format(_raw_bytes, _ext)
+        _fmt_labels = {
+            "pattern_native": ("Pattern Native SOW", "success"),
+            "task_table": ("Task Table", "info"),
+            "param_table": ("Parameter Table", "info"),
+            "unknown": ("Unknown Format", "warning"),
+        }
+        _fmt_label, _fmt_sev = _fmt_labels.get(_fmt, ("Unknown", "warning"))
 
-            if _do_extract or "roadmap_bundle" not in st.session_state:
-                with st.spinner("Extracting roadmap structure with AI…"):
-                    try:
-                        _bundle, _used_model = extract_roadmap_with_ai(
+        col_fmt, col_btn = st.columns([3, 1])
+        with col_fmt:
+            if _fmt_sev == "success":
+                st.success(f"Format detected: **{_fmt_label}** — deterministic extraction, no AI cost.")
+            elif _fmt_sev == "info":
+                st.info(f"Format detected: **{_fmt_label}**")
+            else:
+                st.warning(f"Format: **{_fmt_label}** — full AI extraction will be used.")
+
+        _is_native = _fmt == "pattern_native"
+        _needs_ai = not _is_native
+
+        with col_btn:
+            if _is_native:
+                _do_extract = st.button("Parse Roadmap", key="roadmap_ai_extract", type="primary")
+            else:
+                _do_extract = st.button(
+                    "Extract with AI" if _ai_available else "Extract (legacy)",
+                    key="roadmap_ai_extract",
+                    type="primary",
+                )
+
+        if _do_extract or "roadmap_bundle" not in st.session_state:
+            with st.spinner("Extracting roadmap structure…"):
+                try:
+                    if _is_native:
+                        from engine.roadmap_ai_engine import parse_pattern_native, enrich_bundle_with_ai
+                        _bundle, _raw_task_descs = parse_pattern_native(_raw_bytes)
+                        _used_model = "deterministic"
+                        if _ai_available:
+                            try:
+                                _bundle, _used_model = enrich_bundle_with_ai(
+                                    _ai_client, _bundle, _raw_task_descs, _ai_model
+                                )
+                            except Exception:
+                                pass
+                    elif _ai_available:
+                        _bundle, _used_model = extract_roadmap_full_ai(
                             _ai_client,
                             _raw_bytes,
                             _ext,
                             model=_ai_model,
                             cache=_roadmap_cache,
                         )
+                    else:
+                        _legacy = load_roadmap(_raw_bytes)
+                        if _legacy:
+                            run_detection(store, roadmap_data=_legacy)
+                            st.session_state["roadmap_data"] = _legacy
+                            _dkeys = [k for k in ("content_cadence", "effort_level", "maintenance_coverage") if k in _legacy]
+                            st.success(f"Roadmap loaded (legacy). Detected: {', '.join(_dkeys)}.")
+                            _disp = [{"Parameter": k.replace("_", " ").title(), "Value": _legacy[k]} for k in _dkeys]
+                            st.table(pd.DataFrame(_disp))
+                        else:
+                            st.warning("No recognisable parameters found in roadmap file.")
+                        _bundle = None
+                        _used_model = "legacy"
+
+                    if _bundle:
                         st.session_state["roadmap_bundle"] = _bundle
                         st.session_state["roadmap_used_model"] = _used_model
-                    except Exception as _e:
-                        st.error(f"AI extraction failed: {_e}. Falling back to legacy loader.")
-                        try:
-                            _legacy = load_roadmap(_raw_bytes)
-                            if _legacy:
-                                run_detection(store, roadmap_data=_legacy)
-                                st.session_state["roadmap_data"] = _legacy
-                                st.warning("Legacy extraction used — upload AI key for rich extraction.")
-                        except Exception as _e2:
-                            st.error(f"Legacy fallback also failed: {_e2}")
+                        # Store content plan for New Content page
+                        if _bundle.get("content_plan"):
+                            st.session_state["roadmap_content_plan"] = _bundle["content_plan"]
 
-            _bundle = st.session_state.get("roadmap_bundle")
-            if _bundle:
-                _ss = _bundle.get("source_summary", {})
-                _used_model_label = st.session_state.get("roadmap_used_model", _ai_model)
+                except Exception as _e:
+                    st.error(f"Extraction failed: {_e}. Falling back to legacy loader.")
+                    try:
+                        _legacy = load_roadmap(_raw_bytes)
+                        if _legacy:
+                            run_detection(store, roadmap_data=_legacy)
+                            st.session_state["roadmap_data"] = _legacy
+                            st.warning("Legacy extraction used.")
+                    except Exception as _e2:
+                        st.error(f"Legacy fallback also failed: {_e2}")
 
-                # Confidence banner
-                _conf = _ss.get("parsing_confidence", 0.9)
-                if _conf < 0.7:
-                    st.warning(
-                        f"Parsing confidence is low ({_conf:.0%}). Review the extraction carefully "
-                        "before applying to assumptions."
-                    )
+        _bundle = st.session_state.get("roadmap_bundle")
+        if _bundle:
+            _ss = _bundle.get("source_summary", {})
+            _used_model_label = st.session_state.get("roadmap_used_model", _ai_model)
+            _schema_ver = _bundle.get("schema_version", "1.0")
 
-                # KPI cards
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Tasks Detected", _ss.get("total_tasks_detected", "—"))
-                k2.metric("Focus Areas", len(_ss.get("focus_areas_detected", [])))
-                k3.metric("Timeline", f"{_ss.get('timeline_months_covered', '—')} months")
-                k4.metric("Confidence", f"{_conf:.0%}")
-                st.caption(f"Extracted via {_used_model_label}")
-
-                # Recommendations
-                _recs = _bundle.get("recommendations", [])
-                if _recs:
-                    st.subheader("Recommendations")
-                    for _r in _recs:
-                        _sev = _r.get("severity", "info")
-                        _msg = _r.get("message", "")
-                        if _sev == "warning":
-                            st.warning(_msg)
-                        else:
-                            st.info(_msg)
-
-                # Gaps
-                _gaps = _bundle.get("gaps", [])
-                if _gaps:
-                    with st.expander(f"{len(_gaps)} gap(s) detected"):
-                        for _g in _gaps:
-                            st.markdown(f"- **{_g.get('focus_area', '?')}**: {_g.get('note', '')}")
-
-                # Per-focus breakdown table
-                st.subheader("Per-Focus Breakdown")
-                _focus_rows = []
-                for _fk in ("content", "technical", "on_page", "off_page", "local", "analytics", "strategy"):
-                    _fd = _bundle.get("per_focus", {}).get(_fk, {})
-                    _focus_rows.append({
-                        "Focus Area": _fk.replace("_", " ").title(),
-                        "Effort Level": _fd.get("effort_level", "—"),
-                        "Monthly Hours": _fd.get("monthly_hours", 0.0),
-                        "Cadence": _fd.get("cadence", 0),
-                        "Tasks": _fd.get("task_count", 0),
-                    })
-                st.dataframe(pd.DataFrame(_focus_rows), use_container_width=True, hide_index=True)
-
-                st.divider()
-                st.subheader("Correct the Extraction")
-
-                _nl_correction = st.text_area(
-                    "Natural language correction",
-                    placeholder="e.g., 'Technical audit is quarterly not bi-annual, and content production is 20 hours not 10'",
-                    key="roadmap_nl_correction",
-                    height=80,
-                )
-                _json_edit = st.text_area(
-                    "JSON editor (edit directly, then click Re-extract or Apply)",
-                    value=json.dumps(_bundle, indent=2),
-                    key="roadmap_json_edit",
-                    height=280,
+            # Confidence banner
+            _conf = _ss.get("parsing_confidence", 0.9)
+            if _conf < 0.7:
+                st.warning(
+                    f"Parsing confidence is low ({_conf:.0%}). Review the extraction carefully "
+                    "before applying to assumptions."
                 )
 
-                # Token estimate for transparency
+            # Client metadata (v2 bundles)
+            _meta = _bundle.get("client_metadata", {})
+            if _meta.get("client_name"):
+                _client_cols = st.columns(3)
+                _client_cols[0].metric("Client", _meta.get("client_name", "—"))
+                _client_cols[1].metric("Industry", _meta.get("industry", "—"))
+                _retainer = _meta.get("retainer_aud_monthly", 0)
+                if _retainer:
+                    _client_cols[2].metric("Monthly Retainer", f"${_retainer:,.0f}")
+
+            # KPI cards
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Tasks Detected", _ss.get("total_tasks_detected", "—"))
+            k2.metric("Focus Areas", len(_ss.get("focus_areas_detected", [])))
+            k3.metric("Timeline", f"{_ss.get('timeline_months_covered', '—')} months")
+            k4.metric("Confidence", f"{_conf:.0%}")
+            _extract_label = "deterministic" if _used_model_label == "deterministic" else f"via {_used_model_label}"
+            st.caption(f"Extracted {_extract_label} · Schema v{_schema_ver}")
+
+            # Recommendations
+            _recs = _bundle.get("recommendations", [])
+            if _recs:
+                st.subheader("Recommendations")
+                for _r in _recs:
+                    _sev = _r.get("severity", "info")
+                    _msg = _r.get("message", "")
+                    if _sev == "critical":
+                        st.error(_msg)
+                    elif _sev == "warning":
+                        st.warning(_msg)
+                    else:
+                        st.info(_msg)
+
+            # Gaps
+            _gaps = _bundle.get("gaps", [])
+            if _gaps:
+                with st.expander(f"{len(_gaps)} gap(s) detected"):
+                    for _g in _gaps:
+                        st.markdown(f"- **{_g.get('focus_area', '?')}**: {_g.get('note', '')}")
+
+            # Per-focus breakdown table
+            st.subheader("Per-Focus Breakdown")
+            _focus_rows = []
+            for _fk in ("content", "technical", "on_page", "off_page", "local", "analytics", "strategy"):
+                _fd = _bundle.get("per_focus", {}).get(_fk, {})
+                _focus_rows.append({
+                    "Focus Area": _fk.replace("_", " ").title(),
+                    "Effort Level": _fd.get("effort_level", "—"),
+                    "Monthly Hours": _fd.get("monthly_hours", 0.0),
+                    "Cadence": _fd.get("cadence", 0),
+                    "Tasks": _fd.get("task_count", 0),
+                })
+            st.dataframe(pd.DataFrame(_focus_rows), use_container_width=True, hide_index=True)
+
+            # Content plan preview (v2 bundles)
+            _content_plan = _bundle.get("content_plan", [])
+            if _content_plan:
+                st.subheader("Content Plan")
+                st.caption(f"{len(_content_plan)} URL(s) in content plan — first 20 shown.")
+                _cp_preview = _content_plan[:20]
+                st.dataframe(pd.DataFrame(_cp_preview), use_container_width=True, hide_index=True)
+                st.info(
+                    "Content plan will be passed to the New Content Forecast page — "
+                    "keywords matching these URLs get roadmap-specific publish months."
+                )
+
+            # Strategy duration + industry override widgets
+            st.divider()
+            st.subheader("Strategy Overrides")
+            _ov_cols = st.columns(3)
+            with _ov_cols[0]:
+                _timeline_val = _bundle.get("timeline", {}).get("months_covered", 12)
+                _timeline_override = st.number_input(
+                    "Strategy duration (months)",
+                    min_value=1, max_value=36,
+                    value=int(_timeline_val),
+                    key="roadmap_timeline_override",
+                )
+            with _ov_cols[1]:
+                _restart_val = _bundle.get("timeline", {}).get("strategy_restart_month")
+                _restart_override = st.number_input(
+                    "Strategy restart month",
+                    min_value=1, max_value=36,
+                    value=int(_restart_val) if _restart_val else 1,
+                    key="roadmap_restart_override",
+                )
+            with _ov_cols[2]:
+                _industry_val = _bundle.get("client_metadata", {}).get("industry", "Unknown")
+                _industry_override = st.text_input(
+                    "Industry (for seasonality prior)",
+                    value=_industry_val,
+                    key="roadmap_industry_override",
+                )
+
+            st.divider()
+            st.subheader("Correct the Extraction")
+
+            _nl_correction = st.text_area(
+                "Natural language correction",
+                placeholder="e.g., 'Technical audit is quarterly not bi-annual, and content production is 20 hours not 10'",
+                key="roadmap_nl_correction",
+                height=80,
+            )
+            _json_edit = st.text_area(
+                "JSON editor (edit directly, then click Re-extract or Apply)",
+                value=json.dumps(_bundle, indent=2),
+                key="roadmap_json_edit",
+                height=280,
+            )
+
+            # Token estimate for transparency (AI path only)
+            if _needs_ai and _ai_available:
                 _schema_str = json.dumps(ROADMAP_BUNDLE_SCHEMA)
                 _est_tokens = estimate_extraction_tokens(
                     roadmap_md=str(_raw_bytes[:4000]),
@@ -425,64 +544,74 @@ with tab_roadmap:
                 )
                 st.caption(f"AI call cost: ~{_est_tokens:,} tokens estimated")
 
-                col_reext, col_apply = st.columns(2)
-                with col_reext:
-                    if st.button("Re-extract (AI)", key="roadmap_reextract"):
-                        if _nl_correction.strip():
-                            with st.spinner("Re-running AI extraction with correction…"):
-                                try:
-                                    _new_bundle, _new_model = extract_roadmap_with_ai(
-                                        _ai_client,
-                                        _raw_bytes,
-                                        _ext,
+            col_reext, col_apply = st.columns(2)
+            with col_reext:
+                if st.button("Re-extract", key="roadmap_reextract"):
+                    if _nl_correction.strip():
+                        with st.spinner("Re-running extraction with correction…"):
+                            try:
+                                if _is_native and _ai_available:
+                                    from engine.roadmap_ai_engine import parse_pattern_native, enrich_bundle_with_ai
+                                    _nb2, _rdescs2 = parse_pattern_native(_raw_bytes)
+                                    _new_bundle, _new_model = enrich_bundle_with_ai(
+                                        _ai_client, _nb2, _rdescs2, _ai_model
+                                    )
+                                else:
+                                    _new_bundle, _new_model = extract_roadmap_full_ai(
+                                        _ai_client, _raw_bytes, _ext,
                                         nl_correction=_nl_correction.strip(),
                                         previous_extraction=_bundle,
                                         model=_ai_model,
                                         cache=_roadmap_cache,
                                     )
-                                    st.session_state["roadmap_bundle"] = _new_bundle
-                                    st.session_state["roadmap_used_model"] = _new_model
-                                    st.rerun()
-                                except Exception as _e:
-                                    st.error(f"Re-extraction failed: {_e}")
-                        else:
-                            # No NL — try to parse JSON editor
-                            try:
-                                _edited = json.loads(_json_edit)
-                                st.session_state["roadmap_bundle"] = _edited
+                                st.session_state["roadmap_bundle"] = _new_bundle
+                                st.session_state["roadmap_used_model"] = _new_model
+                                if _new_bundle.get("content_plan"):
+                                    st.session_state["roadmap_content_plan"] = _new_bundle["content_plan"]
                                 st.rerun()
-                            except json.JSONDecodeError as _je:
-                                st.error(f"JSON parse error: {_je}. Fix the JSON or enter a natural-language correction.")
-
-                with col_apply:
-                    if st.button("Apply to assumptions", key="roadmap_apply", type="primary"):
+                            except Exception as _e:
+                                st.error(f"Re-extraction failed: {_e}")
+                    else:
                         try:
-                            _to_apply = json.loads(_json_edit)
-                        except json.JSONDecodeError:
-                            _to_apply = _bundle
-                        run_detection(store, roadmap_data=_to_apply)
-                        st.session_state["roadmap_data"] = _to_apply
-                        st.success("Roadmap assumptions applied.")
+                            _edited = json.loads(_json_edit)
+                            st.session_state["roadmap_bundle"] = _edited
+                            if _edited.get("content_plan"):
+                                st.session_state["roadmap_content_plan"] = _edited["content_plan"]
+                            st.rerun()
+                        except json.JSONDecodeError as _je:
+                            st.error(f"JSON parse error: {_je}. Fix the JSON or enter a natural-language correction.")
 
-        else:
-            # ── No AI key — legacy fallback ────────────────────────────────
-            st.warning(
-                "Bi Frost API key not configured — using legacy scalar extraction. "
-                "Set up your API key in the sidebar to enable rich per-focus-area extraction."
-            )
-            try:
-                _legacy = load_roadmap(_raw_bytes)
-                if _legacy:
-                    run_detection(store, roadmap_data=_legacy)
-                    st.session_state["roadmap_data"] = _legacy
-                    _dkeys = [k for k in ("content_cadence", "effort_level", "maintenance_coverage") if k in _legacy]
-                    st.success(f"Roadmap loaded (legacy). Detected: {', '.join(_dkeys)}.")
-                    _disp = [{"Parameter": k.replace("_", " ").title(), "Value": _legacy[k]} for k in _dkeys]
-                    st.table(pd.DataFrame(_disp))
-                else:
-                    st.warning("Roadmap file parsed but no recognisable parameters found. Check column names.")
-            except Exception as _e:
-                st.error(f"Could not parse roadmap: {_e}")
+            with col_apply:
+                if st.button("Apply to assumptions", key="roadmap_apply", type="primary"):
+                    try:
+                        _to_apply = json.loads(_json_edit)
+                    except json.JSONDecodeError:
+                        _to_apply = _bundle
+
+                    # Apply strategy overrides from widgets before detection
+                    if "timeline" not in _to_apply:
+                        _to_apply["timeline"] = {}
+                    _to_apply["timeline"]["months_covered"] = _timeline_override
+                    _to_apply["timeline"]["strategy_restart_month"] = _restart_override
+                    if "client_metadata" not in _to_apply:
+                        _to_apply["client_metadata"] = {}
+                    _to_apply["client_metadata"]["industry"] = _industry_override
+
+                    run_detection(store, roadmap_data=_to_apply)
+                    st.session_state["roadmap_data"] = _to_apply
+                    if _to_apply.get("content_plan"):
+                        st.session_state["roadmap_content_plan"] = _to_apply["content_plan"]
+
+                    # Apply industry seasonality bias if industry is set
+                    _ind = _industry_override.strip()
+                    if _ind and _ind.lower() not in ("unknown", ""):
+                        from engine.seasonality_engine import apply_industry_bias
+                        _current_season = st.session_state.get("seasonality", DEFAULT_SEASONALITY)
+                        _biased = apply_industry_bias(_current_season, _ind, bias_weight=0.3)
+                        st.session_state["seasonality"] = _biased
+                        st.info(f"Seasonality adjusted for industry: {_ind}")
+
+                    st.success("Roadmap assumptions applied.")
 
     elif "roadmap_bundle" in st.session_state:
         _prev = st.session_state["roadmap_bundle"].get("source_summary", {})
@@ -552,7 +681,11 @@ with col2:
 with col3:
     if "roadmap_bundle" in st.session_state:
         _rb_ss = st.session_state["roadmap_bundle"].get("source_summary", {})
-        st.success(f"Roadmap: {_rb_ss.get('total_tasks_detected', '?')} tasks (AI extracted)")
+        _rb_fmt = st.session_state["roadmap_bundle"].get("source_format", "ai_extracted")
+        _rb_fmt_label = "Pattern Native" if _rb_fmt == "pattern_native" else "AI extracted"
+        _cp_count = len(st.session_state.get("roadmap_content_plan", []))
+        _cp_str = f" + {_cp_count} content URLs" if _cp_count else ""
+        st.success(f"Roadmap: {_rb_ss.get('total_tasks_detected', '?')} tasks ({_rb_fmt_label}){_cp_str}")
     elif "roadmap_data" in st.session_state:
         st.success("Roadmap: loaded (legacy)")
     else:

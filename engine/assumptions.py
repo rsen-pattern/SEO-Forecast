@@ -169,6 +169,10 @@ ASSUMPTIONS: dict[str, Assumption] = {
     "total_monthly_hours": Assumption(key="total_monthly_hours", label="Total Monthly Hours", default=0.0, unit="hrs/month", min_val=0.0),
     "positional_effort_level": Assumption(key="positional_effort_level", label="Positional Effort Level", default="moderate"),
     "timeline_months_covered": Assumption(key="timeline_months_covered", label="Roadmap Timeline (months)", default=12, unit="months", min_val=1.0),
+    "strategy_restart_month": Assumption(key="strategy_restart_month", label="Strategy Restart Month", default=None),
+    "industry": Assumption(key="industry", label="Industry", default="Unknown"),
+    "retainer_aud_monthly": Assumption(key="retainer_aud_monthly", label="Monthly Retainer (AUD)", default=0.0, unit="AUD/month", min_val=0.0),
+    "client_name": Assumption(key="client_name", label="Client Name", default=""),
 }
 
 
@@ -362,17 +366,20 @@ def recompute_rollups(store: dict) -> None:
 def _detect_from_roadmap(store: dict, roadmap_data: dict) -> list[str]:
     """Process roadmap data into assumption keys.
 
-    Handles both new AI-extracted bundle format (has 'per_focus' key) and
-    legacy flat format (content_cadence, effort_level, maintenance_coverage).
+    Dispatches to the appropriate handler based on schema_version / structure:
+    - schema_version "2.x" → _detect_from_bundle_v2 (Pattern native + AI bundles)
+    - has 'per_focus' key (v1 AI bundle) → _detect_from_roadmap_bundle
+    - flat legacy dict → direct scalar mapping
     """
     if not isinstance(roadmap_data, dict):
         return []
 
-    if "per_focus" in roadmap_data:
-        # New AI-extracted bundle
+    schema = str(roadmap_data.get("schema_version", ""))
+    if schema.startswith("2."):
+        detected = _detect_from_bundle_v2(store, roadmap_data)
+    elif "per_focus" in roadmap_data:
         detected = _detect_from_roadmap_bundle(store, roadmap_data)
     else:
-        # Legacy flat format — preserve existing behaviour
         detected: list[str] = []
         mapping = {
             "effort_level": "roadmap import",
@@ -388,10 +395,54 @@ def _detect_from_roadmap(store: dict, roadmap_data: dict) -> list[str]:
     return detected
 
 
+def _detect_from_bundle_v2(store: dict, bundle: dict) -> list[str]:
+    """Flatten a v2 roadmap bundle (Pattern native or hybrid) into assumption keys."""
+    detected: list[str] = []
+
+    # Client metadata
+    meta = bundle.get("client_metadata", {})
+    for key in ("client_name", "industry", "retainer_aud_monthly"):
+        val = meta.get(key)
+        if val not in (None, "", 0, 0.0):
+            _set_detected(store, key, val, "roadmap extraction")
+            detected.append(key)
+
+    # Per-focus effort + hours (shared with v1 logic)
+    detected.extend(_extract_per_focus_keys(store, bundle))
+
+    # Timeline
+    timeline = bundle.get("timeline", {})
+    months = timeline.get("months_covered")
+    if isinstance(months, (int, float)) and months > 0:
+        _set_detected(store, "timeline_months_covered", int(months), "roadmap extraction")
+        detected.append("timeline_months_covered")
+    restart = timeline.get("strategy_restart_month")
+    if restart is not None:
+        _set_detected(store, "strategy_restart_month", restart, "roadmap extraction")
+        detected.append("strategy_restart_month")
+
+    return detected
+
+
 def _detect_from_roadmap_bundle(store: dict, bundle: dict) -> list[str]:
-    """Flatten AI-extracted bundle into per-focus assumption keys."""
+    """Flatten a v1 AI-extracted bundle into per-focus assumption keys."""
+    detected: list[str] = list(_extract_per_focus_keys(store, bundle))
+
+    # v1 timeline has months_covered directly
+    timeline = bundle.get("timeline", {})
+    months_covered = timeline.get("months_covered")
+    if isinstance(months_covered, (int, float)) and months_covered > 0:
+        _set_detected(store, "timeline_months_covered", int(months_covered), "AI roadmap extraction")
+        detected.append("timeline_months_covered")
+
+    return detected
+
+
+def _extract_per_focus_keys(store: dict, bundle: dict) -> list[str]:
+    """Shared helper: extract per-focus effort + hours from any bundle version."""
     detected: list[str] = []
     per_focus = bundle.get("per_focus", {})
+    source = "roadmap extraction"
 
     for focus_key in _FOCUS_KEYS:
         focus_data = per_focus.get(focus_key, {})
@@ -399,18 +450,11 @@ def _detect_from_roadmap_bundle(store: dict, bundle: dict) -> list[str]:
         hours = focus_data.get("monthly_hours")
 
         if effort in ("light", "moderate", "aggressive"):
-            _set_detected(store, f"{focus_key}_effort_level", effort, "AI roadmap extraction")
+            _set_detected(store, f"{focus_key}_effort_level", effort, source)
             detected.append(f"{focus_key}_effort_level")
 
         if isinstance(hours, (int, float)) and hours >= 0:
-            _set_detected(store, f"{focus_key}_monthly_hours", float(hours), "AI roadmap extraction")
+            _set_detected(store, f"{focus_key}_monthly_hours", float(hours), source)
             detected.append(f"{focus_key}_monthly_hours")
-
-    # Timeline
-    timeline = bundle.get("timeline", {})
-    months_covered = timeline.get("months_covered")
-    if isinstance(months_covered, (int, float)) and months_covered > 0:
-        _set_detected(store, "timeline_months_covered", int(months_covered), "AI roadmap extraction")
-        detected.append("timeline_months_covered")
 
     return detected

@@ -237,6 +237,163 @@ def blend_learned_and_default_seasonality(
     return blended
 
 
+# ── Industry seasonality priors ───────────────────────────────────────────────
+
+# Monthly traffic_mod biases by industry vertical (AU market, relative to neutral 0.0).
+# Values are additive overlays on top of DEFAULT_SEASONALITY.
+# Positive = above-average traffic for that industry in that calendar month.
+INDUSTRY_SEASONALITY_PRIORS: dict[str, dict[int, float]] = {
+    "Fashion / Apparel": {
+        1: 0.05,   # post-Christmas sales
+        2: -0.05,
+        3: 0.02,   # Autumn launch
+        4: -0.02,
+        5: 0.08,   # Mother's Day
+        6: 0.12,   # EOFY / mid-season sale
+        7: 0.10,   # winter sale
+        8: 0.08,
+        9: 0.10,   # spring launch
+        10: 0.06,
+        11: 0.18,  # Black Friday / Click Frenzy
+        12: 0.20,  # Christmas gifting
+    },
+    "Home & Garden": {
+        1: -0.05,
+        2: -0.02,
+        3: 0.10,   # autumn planting
+        4: 0.12,
+        5: 0.08,
+        6: 0.05,   # EOFY
+        7: -0.05,
+        8: 0.02,
+        9: 0.08,   # spring gardening
+        10: 0.12,
+        11: 0.05,
+        12: 0.10,  # summer outdoor
+    },
+    "Health & Beauty": {
+        1: 0.10,   # New Year's resolutions
+        2: 0.05,
+        3: 0.02,
+        4: 0.0,
+        5: 0.08,   # Mother's Day
+        6: 0.05,
+        7: -0.05,
+        8: 0.05,
+        9: 0.05,
+        10: 0.05,
+        11: 0.15,
+        12: 0.12,
+    },
+    "Electronics / Technology": {
+        1: 0.05,   # post-Christmas returns / new devices
+        2: -0.08,
+        3: -0.05,
+        4: -0.02,
+        5: -0.02,
+        6: 0.08,   # EOFY tech purchases
+        7: 0.05,
+        8: 0.02,
+        9: 0.05,   # back to school
+        10: 0.05,
+        11: 0.25,  # Black Friday electronics spike
+        12: 0.20,
+    },
+    "Travel & Tourism": {
+        1: 0.05,   # last-minute summer bookings
+        2: 0.02,
+        3: -0.02,
+        4: 0.05,   # Easter bookings
+        5: 0.02,
+        6: 0.08,   # school holiday bookings
+        7: 0.10,
+        8: 0.05,
+        9: -0.02,
+        10: 0.05,
+        11: 0.02,
+        12: 0.12,  # Christmas / summer break
+    },
+    "Finance & Insurance": {
+        1: 0.02,
+        2: 0.0,
+        3: 0.05,
+        4: 0.05,
+        5: 0.02,
+        6: 0.18,   # EOFY financial decisions
+        7: 0.12,   # new financial year
+        8: -0.02,
+        9: -0.05,
+        10: -0.02,
+        11: -0.02,
+        12: -0.05,
+    },
+    "B2B / Professional Services": {
+        1: -0.10,  # slow start to year
+        2: 0.05,
+        3: 0.08,
+        4: 0.05,
+        5: 0.05,
+        6: 0.10,   # EOFY decisions
+        7: -0.10,  # quiet period
+        8: 0.02,
+        9: 0.08,   # Q4 planning
+        10: 0.08,
+        11: 0.05,
+        12: -0.08,
+    },
+    "Education": {
+        1: 0.15,   # new school year enrolments
+        2: 0.10,
+        3: 0.0,
+        4: -0.05,
+        5: 0.05,   # mid-year enrolments
+        6: 0.08,
+        7: 0.10,   # second semester
+        8: 0.02,
+        9: -0.05,
+        10: -0.05,
+        11: 0.05,
+        12: -0.10,
+    },
+}
+
+
+def apply_industry_bias(
+    seasonality: dict,
+    industry: str,
+    bias_weight: float = 0.3,
+) -> dict:
+    """Blend industry-specific seasonality priors into an existing seasonality dict.
+
+    Args:
+        seasonality: Existing seasonality dict (DEFAULT_SEASONALITY schema, keys 1-12).
+        industry: Industry string — must match a key in INDUSTRY_SEASONALITY_PRIORS
+            or a case-insensitive prefix/substring of one. Unrecognised returns unchanged.
+        bias_weight: How strongly to apply the industry bias (0 = no change, 1 = full overlay).
+
+    Returns:
+        Modified seasonality dict with traffic_mod values blended.
+    """
+    # Find a matching industry prior
+    priors = None
+    industry_lower = industry.lower().strip()
+    for key, val in INDUSTRY_SEASONALITY_PRIORS.items():
+        if industry_lower in key.lower() or key.lower() in industry_lower:
+            priors = val
+            break
+
+    if priors is None:
+        return seasonality
+
+    blended = {}
+    for m in range(1, 13):
+        base = dict(seasonality.get(m, {"traffic_mod": 0.0, "cr_mod": 0.0, "aov_mod": 0.0, "label": f"Month {m}"}))
+        industry_mod = priors.get(m, 0.0)
+        base["traffic_mod"] = round(base.get("traffic_mod", 0.0) + bias_weight * industry_mod, 4)
+        blended[m] = base
+    return blended
+
+
 def build_campaign_list(campaign_text: str) -> list[dict]:
     """Parse campaign definitions from user text input.
 

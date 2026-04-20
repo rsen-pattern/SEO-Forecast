@@ -161,12 +161,14 @@ if df is not None:
 if df is not None:
     if st.button("Generate Forecast", type="primary", key="kw_run"):
         with st.spinner("Running keyword forecast..."):
+            _roadmap_cp = st.session_state.get("roadmap_content_plan")
             keyword_df, monthly_df = run_new_content_forecast(
                 df, da, cadence, months, seed,
                 ctr_model=ctr_model,
                 traffic_multiplier=traffic_multiplier,
                 include_informational=not exclude_informational,
                 ai_overview_ctr_penalty=informational_ctr_penalty,
+                roadmap_content_plan=_roadmap_cp,
             )
 
             # Run scenarios if enabled

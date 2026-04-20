@@ -547,6 +547,52 @@ Without a Bi Frost API key, the page falls back to the legacy `utils/roadmap_loa
 
 ---
 
+### Pattern Native SOW Parser (v4.9)
+
+Pattern-native multi-sheet workbooks (Helen Kaminski SOW format) are parsed **deterministically** — no AI cost. The parser is invoked when `detect_roadmap_format()` identifies ≥ 4 matching sheet names from the set: {Breakdown, 1. Client, 2. Consulting, 3. Technical, 4. Content, 5. Links}.
+
+#### Extraction stages
+
+1. **Client metadata** (`1. Client`): `client_name`, `industry`, `retainer_aud_monthly`
+2. **Breakdown grid** (`Breakdown`): hours-per-focus-area from label-value rows
+3. **Per-sheet tasks** (`2. Consulting`, `3. Technical`, `5. Links`): individual tasks with occurrence + hours fallback
+4. **Content plan** (`4. Content`): URL-level plan — `url`, `keyword`, `page_type` (new|optimise), `publish_month`, `notes`
+
+The v2 bundle (schema_version = "2.0") is returned with a `content_plan` list and `client_metadata` in addition to the standard `per_focus` and `timeline` fields.
+
+#### AI enrichment
+
+After deterministic parsing, if a Bi Frost client is available, `enrich_bundle_with_ai()` is called with the raw task description strings. The AI adds `recommendations`, `gaps`, and optional `effort_corrections` — never overwriting the deterministic hours values.
+
+#### content_plan → New Content Forecast
+
+The `content_plan` list is stored in `st.session_state["roadmap_content_plan"]` and passed to `run_new_content_forecast()` via the `roadmap_content_plan` parameter.
+
+Matching uses a two-tier heuristic:
+1. Exact keyword match (case-insensitive)
+2. URL slug contains a significant word (≥5 chars) from the keyword
+
+When a match is found:
+- `publish_month` is set from the content plan (overrides cadence-based assignment)
+- `page_type = "optimise"` sets `amplitude_scale = 0.3` (existing-copy optimisations have 70% less headroom to grow on the S-curve vs. new pages)
+
+#### Industry seasonality priors
+
+`INDUSTRY_SEASONALITY_PRIORS` (in `engine/seasonality_engine.py`) provides monthly `traffic_mod` biases for 8 industry verticals (Fashion/Apparel, Home & Garden, Health & Beauty, Electronics, Travel, Finance, B2B, Education).
+
+`apply_industry_bias(seasonality, industry, bias_weight=0.3)` overlays the prior on the active seasonality dict. The industry is detected from the `client_metadata.industry` field of the v2 bundle and applied when the user clicks **Apply to assumptions**.
+
+#### New assumption keys (v2)
+
+| Key | Default | Source |
+|---|---|---|
+| `client_name` | "" | Pattern native / v2 bundle |
+| `industry` | "Unknown" | Pattern native / v2 bundle |
+| `retainer_aud_monthly` | 0.0 | Pattern native / v2 bundle |
+| `strategy_restart_month` | None | Pattern native / v2 bundle timeline |
+
+---
+
 ## Assumptions and Limitations
 
 1. **CTR data is based on industry averages** — actual CTR varies by industry, SERP features, and brand recognition.
