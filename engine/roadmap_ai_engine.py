@@ -426,11 +426,8 @@ def load_roadmap_v2(
     fmt = detect_roadmap_format(raw_bytes, ext)
 
     if fmt == "pattern_native":
-        bundle = parse_pattern_native(raw_bytes)
-        if client is not None:
-            bundle, used_model = enrich_bundle_with_ai(client, bundle, model=model)
-            return bundle, used_model
-        return bundle, "deterministic"
+        bundle = parse_pattern_native(raw_bytes, ai_client=client, source_filename=filename)
+        return bundle, "hybrid_ai" if client is not None else "deterministic"
 
     if fmt == "task_table":
         df = pd.read_csv(io.BytesIO(raw_bytes)) if ext == "csv" else pd.read_excel(io.BytesIO(raw_bytes))

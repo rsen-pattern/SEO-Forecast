@@ -7,6 +7,7 @@ import pytest
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 XLSX_FIXTURE = FIXTURE_DIR / "sample_pattern_native_roadmap.xlsx"
+HELEN_FIXTURE = FIXTURE_DIR / "sample_helen_variant_roadmap.xlsx"
 TASK_CSV = FIXTURE_DIR / "sample_task_table.csv"
 PARAM_CSV = FIXTURE_DIR / "sample_param_table.csv"
 
@@ -131,3 +132,37 @@ class TestLoadRoadmapV2:
         b3, m3 = load_roadmap_v2(None, param_csv_bytes, "params.csv")
         assert b3["format_detected"] == "param_table"
         assert m3 == "deterministic"
+
+
+class TestHelenVariantParsing:
+    """Tests against the Helen Kaminski layout fixture (blank col A, localisation rows, tooltips)."""
+
+    @pytest.fixture(scope="class")
+    def helen_bytes(self):
+        return HELEN_FIXTURE.read_bytes()
+
+    @pytest.fixture(scope="class")
+    def bundle(self, helen_bytes):
+        return parse_pattern_native(helen_bytes)
+
+    def test_parses_without_raising_on_localisation_text(self, helen_bytes):
+        # Must not crash regardless of "localisation" text in content cells
+        bundle = parse_pattern_native(helen_bytes)
+        assert bundle["schema_version"] == "2.0"
+
+    def test_client_detail_parses_despite_blank_col_a(self, bundle):
+        # Labels in col B, not col A — header-driven parser must find them
+        assert bundle["client_metadata"].get("client_name") == "Helen Kaminski"
+
+    def test_retainer_parsed_despite_label_suffix(self, bundle):
+        # Label is "Monthly Retainer (excl tech fees)" — contains more than just "retainer"
+        assert bundle["client_metadata"].get("retainer_aud_monthly") == pytest.approx(4906)
+
+    def test_tooltip_columns_ignored(self, bundle):
+        # Values like "to be provided", "double click", "SEO to add" must be filtered
+        meta = bundle["client_metadata"]
+        for v in meta.values():
+            if isinstance(v, str):
+                assert "to be provided" not in v.lower()
+                assert "double click" not in v.lower()
+                assert "seo to add" not in v.lower()

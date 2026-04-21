@@ -377,8 +377,23 @@ with tab_roadmap:
                             st.session_state[ROADMAP_BUNDLE] = _bundle
                             st.session_state[ROADMAP_CONTENT_PLAN] = _bundle.get("content_plan", [])
                             st.session_state[ROADMAP_USED_MODEL] = _used_model
+                        except ValueError as _ve:
+                            st.error("Roadmap parsed but failed validation:")
+                            st.code(str(_ve), language="text")
+                            st.warning("Fix the issues above, then re-upload the roadmap.")
+                            try:
+                                _legacy = load_roadmap(_raw_bytes)
+                                if _legacy:
+                                    run_detection(store, roadmap_data=_legacy)
+                                    st.session_state[ROADMAP_DATA] = _legacy
+                                    st.warning("Legacy extraction used — upload AI key for rich extraction.")
+                            except Exception:
+                                pass
                         except Exception as _e:
-                            st.error(f"Roadmap ingestion failed: {_e}. Falling back to legacy loader.")
+                            import traceback
+                            st.error(f"Roadmap ingestion failed: {_e}")
+                            with st.expander("Show error details"):
+                                st.code(traceback.format_exc(), language="text")
                             try:
                                 _legacy = load_roadmap(_raw_bytes)
                                 if _legacy:
