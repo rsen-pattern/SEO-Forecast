@@ -476,34 +476,37 @@ with tab_grid:
 
                 st.divider()
 
-                # Build assumptions summary for Assumptions sheet
+                # Build assumptions text for the grid's Assumptions column
                 assump_rows = _assumptions_summary(store)
+                assumptions_text = "\n".join(
+                    f"{r['label']}: {r['value']} ({r['source']})"
+                    for r in assump_rows
+                    if r.get("label") and r.get("value") is not None
+                )
+
+                # Budget: use retainer assumption repeated per month (no budget tracking in single-source grid)
+                _retainer = float(get_assumption(store, "retainer_aud_monthly") or 0.0)
+                monthly_budget_list = [_retainer] * n_months
+
+                # CVR/AOV: default to scalar-derived per-month lists when not available from Combined metrics
+                _cvr_list = monthly_cvr_list if monthly_cvr_list is not None else [float(cvr)] * n_months
+                _aov_list = monthly_aov_list if monthly_aov_list is not None else [float(aov)] * n_months
 
                 xlsx_buf = build_seo_forecast_grid(
                     monthly_traffic=[float(t) for t in monthly_traffic],
                     monthly_transactions=[float(t) for t in monthly_transactions],
                     monthly_revenue=[float(r) for r in monthly_revenue],
-                    monthly_cvr=monthly_cvr_list,
-                    monthly_aov=monthly_aov_list,
+                    monthly_cvr=_cvr_list,
+                    monthly_aov=_aov_list,
+                    monthly_budget=monthly_budget_list,
                     months=n_months,
                     client_name=grid_client,
                     fy_label=fy_label,
                     start_month=start_month,
-                    traffic_p10=[float(v) for v in traffic_p10] if traffic_p10 else None,
-                    traffic_p90=[float(v) for v in traffic_p90] if traffic_p90 else None,
-                    revenue_p10=revenue_p10,
-                    revenue_p90=revenue_p90,
-                    monthly_baseline=[float(v) for v in monthly_baseline] if monthly_baseline else None,
-                    monthly_positional_uplift=[float(v) for v in monthly_positional_uplift] if monthly_positional_uplift else None,
-                    monthly_new_content_uplift=[float(v) for v in monthly_new_content_uplift] if monthly_new_content_uplift else None,
-                    monthly_decay=[float(v) for v in monthly_decay] if monthly_decay else None,
-                    assumptions_summary=assump_rows,
+                    assumptions_text=assumptions_text,
                 )
 
-                sheet_count = 1
-                if any(x is not None for x in [monthly_baseline, monthly_positional_uplift]):
-                    sheet_count += 1
-                sheet_count += 1  # Assumptions always included
+                sheet_count = 2  # Forecast + Charts (always added by build_seo_forecast_grid)
 
                 dl_col, snap_col = st.columns(2)
                 with dl_col:
@@ -515,9 +518,7 @@ with tab_grid:
                         key="grid_xlsx_dl",
                     )
                     st.caption(
-                        f"Includes {sheet_count} sheets: Forecast (GAZMAN row)"
-                        + (", Stream Breakdown" if sheet_count > 2 else "")
-                        + ", Assumptions trail."
+                        "Includes 2 sheets: SEO Channel Forecast (GAZMAN row format) + Charts."
                     )
 
                 # Snapshot download (Combined Forecast only)
