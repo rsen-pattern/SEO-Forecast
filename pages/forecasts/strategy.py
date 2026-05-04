@@ -20,7 +20,9 @@ from utils.session import (
     KW_DF,
     KW_EXISTING,
     ROADMAP_BUNDLE,
+    ROADMAP_BUNDLES,
     ROADMAP_CONTENT_PLAN,
+    ROADMAP_CONTENT_PLANS,
     SCENARIO_PRESETS,
     SCENARIO_PRESETS_EDITED,
     SCENARIO_RESULTS,
@@ -38,6 +40,14 @@ ga4 = st.session_state.get(GA4_DF)
 kw_existing = st.session_state.get(KW_EXISTING)
 kw_df = st.session_state.get(KW_DF)
 roadmap_bundle = st.session_state.get(ROADMAP_BUNDLE)
+roadmap_bundles = st.session_state.get(ROADMAP_BUNDLES)  # per-scenario override (optional)
+roadmap_content_plans = st.session_state.get(ROADMAP_CONTENT_PLANS)  # per-scenario plans
+
+# Invalidate cached presets when per-scenario bundles change so Strategy re-derives them
+_bundles_sig = tuple(sorted(roadmap_bundles.keys())) if roadmap_bundles else ()
+if st.session_state.get("_roadmap_bundles_sig") != _bundles_sig:
+    st.session_state.pop(SCENARIO_PRESETS, None)
+    st.session_state["_roadmap_bundles_sig"] = _bundles_sig
 
 if ga4 is None or kw_existing is None:
     st.info(
@@ -188,10 +198,26 @@ else:
     )
 
     if SCENARIO_PRESETS not in st.session_state:
-        st.session_state[SCENARIO_PRESETS] = build_scenario_presets(roadmap_bundle=roadmap_bundle)
+        st.session_state[SCENARIO_PRESETS] = build_scenario_presets(
+            roadmap_bundle=roadmap_bundle,
+            roadmap_bundles=roadmap_bundles,
+        )
     presets = st.session_state[SCENARIO_PRESETS]
 
-    if presets["Moderate"].get("source") == "roadmap-detected":
+    _per_scenario_count = len(roadmap_bundles) if roadmap_bundles else 0
+    if _per_scenario_count == 3:
+        st.success(
+            "Per-scenario roadmaps loaded — each scenario is pre-filled from its own SOW. "
+            "Conservative, Moderate, and Aggressive content plans will differ."
+        )
+    elif _per_scenario_count > 0:
+        _missing = [s for s in ("Conservative", "Moderate", "Aggressive") if s not in roadmap_bundles]
+        st.info(
+            f"{_per_scenario_count}/3 per-scenario roadmaps loaded. "
+            f"**{', '.join(_missing)}** inherit from the primary roadmap. "
+            "Upload all three on the Roadmap page to fully differentiate each scenario."
+        )
+    elif presets["Moderate"].get("source") == "roadmap-detected":
         st.success(
             f"Moderate preset pre-filled from your roadmap "
             f"({presets['Moderate']['total_monthly_hours']:.0f} hours/month at "
@@ -285,6 +311,7 @@ else:
                 forecast_start_month=forecast_start_month,
                 aio_intent_penalties=aio_intent_penalties,
                 roadmap_content_plan=content_plan,
+                roadmap_content_plans=roadmap_content_plans,
                 historical_forecast_df=hist_forecast,
                 seed=42,
                 da=st.session_state.get("da", 30),

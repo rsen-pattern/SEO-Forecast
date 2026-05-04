@@ -58,17 +58,36 @@ def _shift_effort(effort: str, delta: int) -> str:
     return _EFFORT_TIERS[max(0, min(2, idx + delta))]
 
 
+def _preset_from_bundle(bundle: dict) -> dict:
+    """Build a single scenario preset dict directly from a v2 roadmap bundle."""
+    rollup = bundle.get("global_rollup", {})
+    meta = bundle.get("client_metadata", {}) or {}
+    return {
+        "effort_level": rollup.get("effort_level", "moderate"),
+        "content_cadence": int(rollup.get("content_cadence", 4)),
+        "maintenance_coverage": float(rollup.get("maintenance_coverage", 0.6)),
+        "total_monthly_hours": float(rollup.get("total_monthly_hours", 25.0)),
+        "retainer_aud_monthly": float(meta.get("retainer_aud_monthly", 5000.0)),
+        "position_range": (5, 20),
+        "new_content_enabled": True,
+        "source": "roadmap-detected",
+    }
+
+
 def build_scenario_presets(
     roadmap_bundle: dict | None = None,
+    roadmap_bundles: dict | None = None,
     retainer_aud: float | None = None,
 ) -> dict[str, dict]:
     """Return three scenario preset configs.
 
     Args:
-        roadmap_bundle: Output of load_roadmap_v2 (v2 schema).
-                        When provided, Moderate is pre-filled from it.
-        retainer_aud: Optional override for the Moderate retainer.
-                      Ignored if roadmap_bundle is provided (read from bundle).
+        roadmap_bundle: Single v2 bundle (Moderate pre-filled; C/A derived at ±40%).
+        roadmap_bundles: Per-scenario bundles keyed by scenario name. When all three
+                         keys are present each scenario is pre-filled directly from its
+                         own bundle. Partial dicts fall back to the single-bundle path
+                         for missing scenarios.
+        retainer_aud: Optional override for the Moderate retainer (generic path only).
 
     Returns:
         Dict with keys 'Conservative', 'Moderate', 'Aggressive'. Each value:
@@ -80,9 +99,19 @@ def build_scenario_presets(
                 "retainer_aud_monthly": float,
                 "position_range": tuple[int, int],
                 "new_content_enabled": bool,
-                "source": "roadmap-detected" | "generic-preset",
+                "source": "roadmap-detected" | "roadmap-detected-per-scenario" | "generic-preset",
             }
     """
+    # ── Per-scenario bundles path (when all three provided) ───────────────
+    if roadmap_bundles and all(k in roadmap_bundles for k in ("Conservative", "Moderate", "Aggressive")):
+        result: dict[str, dict] = {}
+        for name in ("Conservative", "Moderate", "Aggressive"):
+            p = _preset_from_bundle(roadmap_bundles[name])
+            p["source"] = "roadmap-detected-per-scenario"
+            result[name] = p
+        return result
+
+    # ── Single-bundle path ────────────────────────────────────────────────
     if roadmap_bundle is None:
         presets = {k: dict(v) for k, v in _GENERIC_PRESETS.items()}
         if retainer_aud is not None:
@@ -92,7 +121,7 @@ def build_scenario_presets(
             presets["Aggressive"]["retainer_aud_monthly"] = round(r * 1.6, 2)
         return presets
 
-    # ── Roadmap-sourced path ──────────────────────────────────────────────
+    # ── Single roadmap: Moderate from bundle, C/A derived ────────────────
     rollup = roadmap_bundle.get("global_rollup", {})
     meta = roadmap_bundle.get("client_metadata", {}) or {}
 
@@ -148,6 +177,7 @@ def run_three_scenarios(
     forecast_start_month: int | None = None,
     aio_intent_penalties: dict | None = None,
     roadmap_content_plan: list[dict] | None = None,
+    roadmap_content_plans: dict[str, list[dict]] | None = None,
     historical_forecast_df: pd.DataFrame | None = None,
     seed: int = 42,
     da: int = 30,
@@ -156,7 +186,6 @@ def run_three_scenarios(
 
     Args:
         ga4_df: Historical GA4 traffic DataFrame (date, traffic columns).
-                Used as the combined baseline and for positional GA4 anchoring.
         kw_df: Full keyword portfolio (used to find unranked keywords for new content).
         kw_existing: Ranking keywords (position 1-100) — input to positional forecast.
         presets: Output of build_scenario_presets().
@@ -164,12 +193,14 @@ def run_three_scenarios(
         seasonality: Monthly seasonality modifiers passed to stream engines.
         forecast_start_month: Calendar month of forecast month 1 (for seasonality).
         aio_intent_penalties: Per-intent AIO CTR penalties passed to stream engines.
-        roadmap_content_plan: Content plan list from roadmap ingestion.
+        roadmap_content_plan: Single content plan used for all scenarios (fallback).
+        roadmap_content_plans: Per-scenario content plans keyed by scenario name.
+                               Takes priority over roadmap_content_plan; falls back to
+                               roadmap_content_plan for any missing scenario key.
         historical_forecast_df: Pre-computed historical forecast; when provided,
                                  overrides the linear baseline in Combined.
         seed: Random seed for MC reproducibility.
-        da: Domain authority estimate (auto-derived or user-supplied). Passed to
-            new-content forecast engine. Defaults to 30 when not supplied.
+        da: Domain authority estimate. Defaults to 30.
 
     Returns:
         Dict keyed by scenario name. Each value:
@@ -191,6 +222,14 @@ def run_three_scenarios(
 
     for scenario_name in ("Conservative", "Moderate", "Aggressive"):
         preset = presets.get(scenario_name, {})
+
+        # Resolve which content plan this scenario uses
+        scenario_plan: list[dict] | None = None
+        if roadmap_content_plans and scenario_name in roadmap_content_plans:
+            scenario_plan = roadmap_content_plans[scenario_name]
+        else:
+            scenario_plan = roadmap_content_plan
+
         try:
             # Step 1: Filter kw_existing to non-branded keywords
             kw_pos = kw_existing.copy()
@@ -224,7 +263,7 @@ def run_three_scenarios(
                 nc_cols = ["keyword", "volume", "kd"]
                 has_unranked = not unranked.empty and all(c in unranked.columns for c in nc_cols)
 
-                if has_unranked or roadmap_content_plan:
+                if has_unranked or scenario_plan:
                     nc_input = unranked[nc_cols].copy() if has_unranked else pd.DataFrame(columns=nc_cols)
                     new_content_kw_df, new_content_monthly = run_new_content_forecast(
                         nc_input,
@@ -234,7 +273,7 @@ def run_three_scenarios(
                         seasonality=seasonality,
                         forecast_start_month=forecast_start_month,
                         aio_intent_penalties=aio_intent_penalties,
-                        roadmap_content_plan=roadmap_content_plan,
+                        roadmap_content_plan=scenario_plan,
                         seed=seed,
                     )
 
