@@ -37,6 +37,10 @@ ROADMAP_FILE_EXT = "roadmap_file_ext"
 ROADMAP_AI_CACHE = "roadmap_ai_cache"
 ROADMAP_USED_MODEL = "roadmap_used_model"
 
+# Per-scenario roadmap overrides (dict keyed by scenario name)
+ROADMAP_BUNDLES = "roadmap_bundles"           # {"Conservative": bundle, ...}
+ROADMAP_CONTENT_PLANS = "roadmap_content_plans"  # {"Conservative": plan, ...}
+
 # ── Historical forecast ───────────────────────────────────────────────
 HIST_N_MONTHS = "hist_n_months"
 
@@ -75,6 +79,8 @@ class AppState(TypedDict, total=False):
     roadmap_file_ext: str
     roadmap_ai_cache: dict
     roadmap_used_model: str
+    roadmap_bundles: dict
+    roadmap_content_plans: dict
     hist_n_months: int
     scenario_presets: dict
     scenario_results: dict

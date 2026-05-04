@@ -22,7 +22,9 @@ from utils.session import (
     KW_EXISTING,
     ROADMAP_AI_CACHE,
     ROADMAP_BUNDLE,
+    ROADMAP_BUNDLES,
     ROADMAP_CONTENT_PLAN,
+    ROADMAP_CONTENT_PLANS,
     ROADMAP_DATA,
     ROADMAP_FILE_EXT,
     ROADMAP_RAW_BYTES,
@@ -308,6 +310,93 @@ elif ROADMAP_DATA in st.session_state:
         f"effort={_rd.get('effort_level', '—')}, "
         f"maintenance={_rd.get('maintenance_coverage', '—')}"
     )
+
+# ── Per-Scenario Roadmap Overrides (optional) ─────────────────────────────────
+st.divider()
+with st.expander("Per-Scenario Roadmap Overrides (optional)", expanded=False):
+    st.caption(
+        "Upload a separate roadmap file for Conservative, Moderate, and/or Aggressive scenarios. "
+        "Leave a slot empty to inherit from the Primary Roadmap above. "
+        "When all three are provided, each scenario's preset is pre-filled directly from its own bundle."
+    )
+
+    _scenario_names = ("Conservative", "Moderate", "Aggressive")
+    _per_bundles: dict = st.session_state.get(ROADMAP_BUNDLES, {})
+    _per_plans: dict = st.session_state.get(ROADMAP_CONTENT_PLANS, {})
+
+    _scen_cols = st.columns(3)
+    for _col, _sname in zip(_scen_cols, _scenario_names, strict=True):
+        with _col:
+            st.markdown(f"**{_sname}**")
+            _existing = _per_bundles.get(_sname)
+            if _existing:
+                _ss2 = _existing.get("source_summary", {})
+                st.caption(
+                    f"✅ {_ss2.get('total_tasks_detected', '?')} tasks, "
+                    f"{len(_ss2.get('focus_areas_detected', []))} focus areas"
+                )
+            else:
+                st.caption("Inheriting from Primary Roadmap")
+
+            _up = st.file_uploader(
+                f"Roadmap for {_sname}",
+                type=["csv", "xlsx", "xls", "tsv"],
+                key=f"roadmap_upload_{_sname.lower()}",
+                label_visibility="collapsed",
+            )
+
+            if _up is not None:
+                _rb = _up.read()
+                _re = _up.name.rsplit(".", 1)[-1] if "." in _up.name else "csv"
+                _ck_s = compute_cache_key(_rb, None, _ai_model)
+                if _ck_s in _roadmap_cache:
+                    _sb = _roadmap_cache[_ck_s]["bundle"]
+                else:
+                    if _ai_available:
+                        with st.spinner(f"Extracting {_sname} roadmap…"):
+                            try:
+                                _sb, _sm = load_roadmap_v2(
+                                    _ai_client, _rb, f"roadmap.{_re}", model=_ai_model,
+                                )
+                                _roadmap_cache[_ck_s] = {"bundle": _sb, "model": _sm}
+                            except Exception as _se:
+                                st.error(f"Extraction failed: {_se}")
+                                _sb = None
+                    else:
+                        st.warning("Bi Frost not available — cannot extract this roadmap.")
+                        _sb = None
+
+                if _sb is not None:
+                    _per_bundles[_sname] = _sb
+                    _per_plans[_sname] = _sb.get("content_plan", [])
+                    st.session_state[ROADMAP_BUNDLES] = _per_bundles
+                    st.session_state[ROADMAP_CONTENT_PLANS] = _per_plans
+                    # Moderate bundle drives the assumptions store (primary)
+                    if _sname == "Moderate":
+                        run_detection(store, roadmap_data=_sb)
+                    st.rerun()
+
+            if _existing and st.button(f"Clear {_sname}", key=f"roadmap_clear_{_sname.lower()}"):
+                _per_bundles.pop(_sname, None)
+                _per_plans.pop(_sname, None)
+                st.session_state[ROADMAP_BUNDLES] = _per_bundles
+                st.session_state[ROADMAP_CONTENT_PLANS] = _per_plans
+                st.rerun()
+
+    _loaded_count = sum(1 for s in _scenario_names if s in _per_bundles)
+    if _loaded_count == 3:
+        st.success("✓ All three scenario roadmaps loaded — Strategy will use per-scenario presets and content plans.")
+    elif _loaded_count > 0:
+        _missing = [s for s in _scenario_names if s not in _per_bundles]
+        st.info(
+            f"{_loaded_count}/3 scenario roadmaps loaded. "
+            f"**{', '.join(_missing)}** will inherit from the Primary Roadmap."
+        )
+
+    if _loaded_count > 0 and st.button("Clear all per-scenario roadmaps", key="roadmap_clear_all_per_scenario"):
+        st.session_state.pop(ROADMAP_BUNDLES, None)
+        st.session_state.pop(ROADMAP_CONTENT_PLANS, None)
+        st.rerun()
 
 # ── Data Status ───────────────────────────────────────────────────────────────
 st.divider()
