@@ -1,4 +1,5 @@
 import calendar
+import datetime
 import os
 
 import pandas as pd
@@ -250,10 +251,17 @@ _cur_options = list(CURRENCY_SYMBOLS.keys())
 _cur_idx = _cur_options.index(default_cur) if default_cur in _cur_options else 0
 currency = st.sidebar.selectbox("Currency", _cur_options, index=_cur_idx, key="grid_currency")
 sym = CURRENCY_SYMBOLS.get(currency, "$")
-grid_client = st.sidebar.text_input("Client Name", value="", key="grid_client")
-fy_label = st.sidebar.text_input("FY Label", value="FY26", key="grid_fy")
+# Derive defaults from uploaded data so the analyst doesn't have to type them
+_default_client = str(get_assumption(store, "client_name") or "")
+_default_start_month = int(get_assumption(store, "strategy_restart_month") or 7)
+_today = datetime.date.today()
+_fy_year = _today.year if _today.month <= 6 else _today.year + 1
+_default_fy = f"FY{str(_fy_year)[-2:]}"
+
+grid_client = st.sidebar.text_input("Client Name", value=_default_client, key="grid_client")
+fy_label = st.sidebar.text_input("FY Label", value=_default_fy, key="grid_fy")
 start_month = st.sidebar.selectbox(
-    "Start Month", range(1, 13), index=6,
+    "Start Month", list(range(1, 13)), index=_default_start_month - 1,
     format_func=lambda m: calendar.month_name[m], key="grid_start_month",
 )
 
@@ -477,34 +485,37 @@ with tab_grid:
 
                 st.divider()
 
-                # Build assumptions summary for Assumptions sheet
+                # Build assumptions text for the grid's Assumptions column
                 assump_rows = _assumptions_summary(store)
+                assumptions_text = "\n".join(
+                    f"{r['label']}: {r['value']} ({r['source']})"
+                    for r in assump_rows
+                    if r.get("label") and r.get("value") is not None
+                )
+
+                # Budget: use retainer assumption repeated per month (no budget tracking in single-source grid)
+                _retainer = float(get_assumption(store, "retainer_aud_monthly") or 0.0)
+                monthly_budget_list = [_retainer] * n_months
+
+                # CVR/AOV: default to scalar-derived per-month lists when not available from Combined metrics
+                _cvr_list = monthly_cvr_list if monthly_cvr_list is not None else [float(cvr)] * n_months
+                _aov_list = monthly_aov_list if monthly_aov_list is not None else [float(aov)] * n_months
 
                 xlsx_buf = build_seo_forecast_grid(
                     monthly_traffic=[float(t) for t in monthly_traffic],
                     monthly_transactions=[float(t) for t in monthly_transactions],
                     monthly_revenue=[float(r) for r in monthly_revenue],
-                    monthly_cvr=monthly_cvr_list,
-                    monthly_aov=monthly_aov_list,
+                    monthly_cvr=_cvr_list,
+                    monthly_aov=_aov_list,
+                    monthly_budget=monthly_budget_list,
                     months=n_months,
                     client_name=grid_client,
                     fy_label=fy_label,
                     start_month=start_month,
-                    traffic_p10=[float(v) for v in traffic_p10] if traffic_p10 else None,
-                    traffic_p90=[float(v) for v in traffic_p90] if traffic_p90 else None,
-                    revenue_p10=revenue_p10,
-                    revenue_p90=revenue_p90,
-                    monthly_baseline=[float(v) for v in monthly_baseline] if monthly_baseline else None,
-                    monthly_positional_uplift=[float(v) for v in monthly_positional_uplift] if monthly_positional_uplift else None,
-                    monthly_new_content_uplift=[float(v) for v in monthly_new_content_uplift] if monthly_new_content_uplift else None,
-                    monthly_decay=[float(v) for v in monthly_decay] if monthly_decay else None,
-                    assumptions_summary=assump_rows,
+                    assumptions_text=assumptions_text,
                 )
 
-                sheet_count = 1
-                if any(x is not None for x in [monthly_baseline, monthly_positional_uplift]):
-                    sheet_count += 1
-                sheet_count += 1  # Assumptions always included
+                sheet_count = 2  # Forecast + Charts (always added by build_seo_forecast_grid)
 
                 dl_col, snap_col = st.columns(2)
                 with dl_col:
@@ -516,9 +527,7 @@ with tab_grid:
                         key="grid_xlsx_dl",
                     )
                     st.caption(
-                        f"Includes {sheet_count} sheets: Forecast (GAZMAN row)"
-                        + (", Stream Breakdown" if sheet_count > 2 else "")
-                        + ", Assumptions trail."
+                        "Includes 2 sheets: SEO Channel Forecast (GAZMAN row format) + Charts."
                     )
 
                 # Snapshot download (Combined Forecast only)
