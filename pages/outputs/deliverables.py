@@ -318,19 +318,25 @@ with tab_grid:
             _summary = summarise_scenarios(_results, months=_months)
             st.dataframe(_summary, use_container_width=True, hide_index=True)
 
-            _mod = _results.get("Moderate", {})
-            if "combined_df" in _mod:
-                _combined = _mod["combined_df"]
-                _forecast = _combined[_combined["is_forecast"]]
-                _col = "combined_p50" if "combined_p50" in _forecast.columns else "combined"
-                _total_traffic = int(_forecast[_col].sum())
-                _total_transactions = int(_total_traffic * cvr / 100.0)
-                _total_revenue = _total_transactions * aov
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Moderate — Year 1 Traffic", f"{_total_traffic:,.0f}")
-                c2.metric("Moderate — Year 1 Transactions", f"{_total_transactions:,.0f}")
-                c3.metric("Moderate — Year 1 Revenue", f"{sym}{_total_revenue:,.2f}")
-                st.caption("Conservative and Aggressive totals are in the downloaded xlsx.")
+            # Year 1 summary cards for all three scenarios
+            _scen_cols = st.columns(3)
+            for _sc, _sc_col in zip(("Conservative", "Moderate", "Aggressive"), _scen_cols, strict=True):
+                _sd = _results.get(_sc, {})
+                if "combined_df" not in _sd:
+                    _sc_col.warning(f"{_sc}: no data")
+                    continue
+                _sdf = _sd["combined_df"]
+                _sf = _sdf[_sdf["is_forecast"]]
+                _scol = "combined_p50" if "combined_p50" in _sf.columns else "combined"
+                _st = int(_sf[_scol].sum())
+                _str = int(_st * cvr / 100.0)
+                _srev = _str * aov
+                with _sc_col:
+                    _icon = {"Conservative": "🔵", "Moderate": "🟢", "Aggressive": "🟠"}[_sc]
+                    st.markdown(f"**{_icon} {_sc}**")
+                    st.metric("Year 1 Traffic", f"{_st:,.0f}")
+                    st.metric("Year 1 Transactions", f"{_str:,.0f}")
+                    st.metric("Year 1 Revenue", f"{sym}{_srev:,.2f}")
 
             _buf = build_three_scenario_grid(
                 scenario_results=_results,

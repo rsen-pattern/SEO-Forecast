@@ -41,11 +41,53 @@ if SCENARIO_RESULTS not in st.session_state:
         "This page is for deep-dive analysis on a single forecast configuration."
     )
 else:
-    st.success(
-        "✅ Three scenarios already run via Strategy. "
-        "This page lets you drill into a single forecast configuration in detail. "
-        "Download the 3-scenario xlsx from **Deliverables** or the Strategy page."
-    )
+    # Show all three scenario combined forecasts as tabs — no need to re-run anything
+    st.subheader("Strategy Scenario Forecasts")
+    _scen_results = st.session_state[SCENARIO_RESULTS]
+    _stab_labels = ["🔵 Conservative", "🟢 Moderate", "🟠 Aggressive"]
+    _stabs = st.tabs(_stab_labels)
+    for _stab, _sname in zip(_stabs, ("Conservative", "Moderate", "Aggressive"), strict=True):
+        _sd = _scen_results.get(_sname, {})
+        with _stab:
+            if "error" in _sd:
+                st.error(f"Forecast failed: {_sd['error']}")
+                continue
+            if "combined_df" not in _sd:
+                st.info("No combined data for this scenario.")
+                continue
+            _scdf = _sd["combined_df"]
+            _sfdf = _scdf[_scdf["is_forecast"]]
+            _sp50 = "combined_p50" if "combined_p50" in _sfdf.columns else "combined"
+            _sup = "positional_uplift_p50" if "positional_uplift_p50" in _sfdf.columns else "positional_uplift"
+            _s_end = int(_sfdf[_sp50].iloc[-1]) if not _sfdf.empty else 0
+            _s_base = int(_sfdf["baseline"].iloc[-1]) if "baseline" in _sfdf.columns and not _sfdf.empty else 0
+            _s_uplift = int(_sfdf[_sup].sum() + _sfdf.get("new_content_uplift", pd.Series(0)).sum()) if not _sfdf.empty else 0
+            _s_decay = int(_sfdf["decay"].sum()) if "decay" in _sfdf.columns and not _sfdf.empty else 0
+            _preset = _sd.get("preset", {})
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("End Traffic (P50)", f"{_s_end:,}")
+            k2.metric("Baseline (End)", f"{_s_base:,}")
+            k3.metric("Total Uplift", f"{_s_uplift:,}")
+            k4.metric("Decay Risk", f"{_s_decay:,}")
+
+            if "positional_uplift" not in _scdf.columns and "positional_uplift_p50" in _scdf.columns:
+                _scdf = _scdf.copy()
+                _scdf["positional_uplift"] = _scdf["positional_uplift_p50"]
+            st.plotly_chart(
+                combined_three_stream_chart(_scdf),
+                use_container_width=True,
+                key=f"comb_scen_chart_{_sname}",
+            )
+            st.caption(
+                f"Effort: **{_preset.get('effort_level', '—')}** | "
+                f"Cadence: **{_preset.get('content_cadence', 0)} posts/mo** | "
+                f"Maintenance: **{_preset.get('maintenance_coverage', 0):.0%}** | "
+                f"Retainer: **${_preset.get('retainer_aud_monthly', 0):,.0f}/mo**"
+            )
+
+    st.divider()
+    st.subheader("Standalone Deep-Dive")
 
 # ── Data Availability ──────────────────────────────────────────────────────
 ga4_df = st.session_state.get(GA4_DF)

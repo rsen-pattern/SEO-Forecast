@@ -403,11 +403,13 @@ else:
             key="strat_stream_composition_chart",
         )
 
-        # Per-scenario drill-downs
+        # Per-scenario drill-downs — one tab per scenario
         st.subheader("Per-Scenario Detail")
-        for scenario_name in SCENARIO_ORDER_RESULTS:
+        _tab_labels = ["🔵 Conservative", "🟢 Moderate", "🟠 Aggressive"]
+        _tabs = st.tabs(_tab_labels)
+        for tab, scenario_name in zip(_tabs, SCENARIO_ORDER_RESULTS, strict=True):
             scenario = results.get(scenario_name, {})
-            with st.expander(f"{scenario_name} scenario", expanded=False):
+            with tab:
                 if "error" in scenario:
                     st.error(f"Forecast failed: {scenario['error']}")
                     continue
@@ -477,6 +479,9 @@ else:
         _dl_currency = str(get_assumption(store, "currency"))
         _dl_client = get_assumption(store, "client_name") or ""
 
+        _dl_today = pd.Timestamp.now()
+        _dl_fy_year = _dl_today.year if _dl_today.month <= 6 else _dl_today.year + 1
+        _dl_fy_label = f"FY{str(_dl_fy_year)[-2:]}"
         _dl_buf = build_three_scenario_grid(
             scenario_results=_dl_results,
             presets=_dl_presets,
@@ -485,9 +490,9 @@ else:
             seasonality=_dl_seasonality,
             apply_seasonal_aov=True,
             currency=_dl_currency,
-            start_month=pd.Timestamp.now().month,
+            start_month=_dl_today.month,
             client_name=_dl_client,
-            fy_label="FY26",
+            fy_label=_dl_fy_label,
         )
         st.download_button(
             "Download 3-Scenario Forecast Grid XLSX",
