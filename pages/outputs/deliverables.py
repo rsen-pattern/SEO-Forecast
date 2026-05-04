@@ -1,4 +1,5 @@
 import calendar
+import datetime
 import os
 
 import pandas as pd
@@ -250,10 +251,17 @@ _cur_options = list(CURRENCY_SYMBOLS.keys())
 _cur_idx = _cur_options.index(default_cur) if default_cur in _cur_options else 0
 currency = st.sidebar.selectbox("Currency", _cur_options, index=_cur_idx, key="grid_currency")
 sym = CURRENCY_SYMBOLS.get(currency, "$")
-grid_client = st.sidebar.text_input("Client Name", value="", key="grid_client")
-fy_label = st.sidebar.text_input("FY Label", value="FY26", key="grid_fy")
+# Derive defaults from uploaded data so the analyst doesn't have to type them
+_default_client = str(get_assumption(store, "client_name") or "")
+_default_start_month = int(get_assumption(store, "strategy_restart_month") or 7)
+_today = datetime.date.today()
+_fy_year = _today.year if _today.month <= 6 else _today.year + 1
+_default_fy = f"FY{str(_fy_year)[-2:]}"
+
+grid_client = st.sidebar.text_input("Client Name", value=_default_client, key="grid_client")
+fy_label = st.sidebar.text_input("FY Label", value=_default_fy, key="grid_fy")
 start_month = st.sidebar.selectbox(
-    "Start Month", range(1, 13), index=6,
+    "Start Month", list(range(1, 13)), index=_default_start_month - 1,
     format_func=lambda m: calendar.month_name[m], key="grid_start_month",
 )
 
