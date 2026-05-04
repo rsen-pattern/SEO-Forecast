@@ -572,37 +572,49 @@ if NC_RESULT in st.session_state:
             if n_excluded > 0:
                 st.info(f"**{n_excluded} informational keywords** were excluded from this forecast.")
 
-            display_cols = [
+            _DISPLAY_COLS = [
                 "rank", "keyword", "volume", "kd", "tier", "intent", "efficiency_score",
                 "publish_month", "expected_position", "ctr", "estimated_monthly_traffic",
                 "time_to_rank", "traffic_starts_month",
             ]
-            display_df = keyword_df[display_cols].copy()
-            display_df["efficiency_score"] = display_df["efficiency_score"].round(1)
+            _has_kw_schedule = not keyword_df.empty and "keyword" in keyword_df.columns
 
-            st.dataframe(
-                display_df.style.apply(
-                    lambda row: [
-                        f"background-color: {TIER_COLORS.get(row['tier'], '')}20"
-                        if col == "tier" else ""
-                        for col in row.index
-                    ],
-                    axis=1,
-                ),
-                use_container_width=True,
-                hide_index=True,
-                height=500,
-            )
+            if not _has_kw_schedule:
+                st.info(
+                    "Keyword-level schedule is not available for this forecast mode. "
+                    "Upload a SEMrush keyword export or use the Roadmap content plan to "
+                    "enable per-keyword breakdown."
+                )
+            else:
+                display_cols = [c for c in _DISPLAY_COLS if c in keyword_df.columns]
+                display_df = keyword_df[display_cols].copy()
+                if "efficiency_score" in display_df.columns:
+                    display_df["efficiency_score"] = display_df["efficiency_score"].round(1)
 
-            fig_kw = keyword_schedule_chart(keyword_df)
-            st.plotly_chart(fig_kw, use_container_width=True)
-            st.caption("Top keywords by estimated monthly traffic, coloured by difficulty tier.")
+                st.dataframe(
+                    display_df.style.apply(
+                        lambda row: [
+                            f"background-color: {TIER_COLORS.get(row['tier'], '')}20"
+                            if col == "tier" else ""
+                            for col in row.index
+                        ],
+                        axis=1,
+                    ) if "tier" in display_df.columns else display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=500,
+                )
 
-            unlikely = keyword_df[~keyword_df["will_rank"]].head(5)
-            if not unlikely.empty:
-                st.info("💡 **Keywords unlikely to rank at this DA** — consider deferring these or raising DA:")
-                for _, row in unlikely.iterrows():
-                    st.markdown(f"- **{row['keyword']}** (KD: {row['kd']}, Volume: {row['volume']:,})")
+                fig_kw = keyword_schedule_chart(keyword_df)
+                st.plotly_chart(fig_kw, use_container_width=True)
+                st.caption("Top keywords by estimated monthly traffic, coloured by difficulty tier.")
+
+                if "will_rank" in keyword_df.columns:
+                    unlikely = keyword_df[~keyword_df["will_rank"]].head(5)
+                    if not unlikely.empty:
+                        st.info("💡 **Keywords unlikely to rank at this DA** — consider deferring these or raising DA:")
+                        for _, row in unlikely.iterrows():
+                            st.markdown(f"- **{row['keyword']}** (KD: {row['kd']}, Volume: {row['volume']:,})")
 
     # ── Tab: Revenue Analysis ────────────────────────────────────────────
     if r["enable_revenue"]:
